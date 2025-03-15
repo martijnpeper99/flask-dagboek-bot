@@ -74,6 +74,15 @@ twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_phone_number = os.getenv('TWILIO_PHONE_NUMBER')
 my_phone_number = os.getenv('MY_PHONE_NUMBER')
+TWILIO_SANDBOX_NUMBER=os.getenv('TWILIO_SANDBOX_NUMBER')   
+
+TWILIO_SANDBOX_NUMBER = os.getenv("TWILIO_SANDBOX_NUMBER")
+
+if TWILIO_SANDBOX_NUMBER is None:
+    raise ValueError("TWILIO_SANDBOX_NUMBER is not set. Check your .env file!")
+ 
+
+
 
 
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
@@ -81,7 +90,7 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 
 
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
+print("TWILIO_SANDBOX_NUMBER:", os.getenv("TWILIO_SANDBOX_NUMBER"))  # CHECK HIER!
 print("TWILIO_ACCOUNT_SID:", os.getenv("TWILIO_ACCOUNT_SID"))
 print("TWILIO_AUTH_TOKEN:", os.getenv("TWILIO_AUTH_TOKEN"))
 
@@ -149,6 +158,6 @@ def generate_diary():
     return jsonify({"entry": entry})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=8080)
 
     
