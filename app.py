@@ -41,10 +41,14 @@ import io
 import requests
 import re
 from requests.auth import HTTPBasicAuth
+from google.oauth2 import service_account
 import json
+from google.cloud import storage
+from vosk import Model, KaldiRecognizer
 import subprocess
 from dotenv import load_dotenv
 from pathlib import Path
+from pydub import AudioSegment
 import urllib.request
 from twilio.twiml.voice_response import VoiceResponse
 import logging
@@ -81,10 +85,6 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 
 
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
-print("TWILIO_ACCOUNT_SID:", os.getenv("TWILIO_ACCOUNT_SID"))
-print("TWILIO_AUTH_TOKEN:", os.getenv("TWILIO_AUTH_TOKEN"))
-
 
 
 # SQLite Database aanmaken
@@ -149,6 +149,4 @@ def generate_diary():
     return jsonify({"entry": entry})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
-
-    
+    app.run(debug=True)
