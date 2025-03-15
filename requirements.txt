@@ -5,3 +5,15 @@ twilio
 openai
 sqlite3
 requests
+flask
+gunicorn
+python-dotenv
+twilio
+openai
+requests
+google-cloud-storage
+google-auth
+google-auth-oauthlib
+sqlite3
+pydub
+vosk
