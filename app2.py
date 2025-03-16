@@ -110,56 +110,46 @@ def generate_openai_diary(prompt: str):
     except Exception as e:
         logging.error(f"OpenAI-fout: {e}")
         return "Er ging iets mis met OpenAI."
-
-#@app.route("/generate_diary_now", methods=["POST"])
+@app.route("/generate_diary_now", methods=["POST"])
 def generate_diary_now():
     logging.debug("▶️ generate_diary_now aangeroepen.")
 
-    # Haal direct de Twilio berichten op, zonder /get_messages te gebruiken
+    # 1) Haal direct Twilio-berichten op
     all_messages = twilio_client.messages.list(limit=50)
     if not all_messages:
         return jsonify({"error": "Geen berichten beschikbaar."}), 400
 
+    # 2) Filter laatste 24 uur
     now_utc = datetime.datetime.utcnow()
     one_day_ago = now_utc - datetime.timedelta(days=1)
-    
+
     last_24h_bodies = []
     for msg in all_messages:
-        # Filter alleen berichten voor/van de Sandbox
         if msg.from_ == TWILIO_SANDBOX_NUMBER or msg.to == TWILIO_SANDBOX_NUMBER:
-            # Check date_sent
-            if not msg.date_sent:
-                continue
-            # msg.date_sent is een datetime-object
-            # Vergelijk direct met one_day_ago (geen strptime nodig!)
-            if msg.date_sent > one_day_ago:
+            if msg.date_sent and msg.date_sent > one_day_ago:
                 last_24h_bodies.append(msg.body)
-    
+
     if not last_24h_bodies:
         return jsonify({"error": "Geen recente berichten (24 uur)."}), 400
 
-    # Combineer alle berichten tot één string
     combined_text = "\n".join(last_24h_bodies)
 
-    # Prompts maken
+    # 3) Bouw prompts en genereer met OpenAI
     prompt_martijn = f"""
-Ik ben Martijn en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
-{combined_text}
-
-Schrijf een dagboekverslag over mijn dag vanuit mijn ik-perspectief.
-"""
+    Ik ben Martijn...
+    {combined_text}
+    Schrijf een dagboekverslag...
+    """
     prompt_lisa = f"""
-Ik ben Lisa en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
-{combined_text}
+    Ik ben Lisa...
+    {combined_text}
+    Schrijf een dagboekverslag...
+    """
 
-Schrijf een dagboekverslag over mijn dag vanuit mijn ik-perspectief.
-"""
-
-    # OpenAI calls
     martijn_entry = generate_openai_diary(prompt_martijn)
     lisa_entry = generate_openai_diary(prompt_lisa)
 
-    # Opslaan in database
+    # 4) Sla op in database
     conn = sqlite3.connect("diary.db")
     c = conn.cursor()
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -168,10 +158,12 @@ Schrijf een dagboekverslag over mijn dag vanuit mijn ik-perspectief.
     conn.commit()
     conn.close()
 
+    # 5) Geef JSON terug
     return jsonify({
         "martijn_entry": martijn_entry,
         "lisa_entry": lisa_entry
     })
+
 
 # **Server starten**
 if __name__ == "__main__":
