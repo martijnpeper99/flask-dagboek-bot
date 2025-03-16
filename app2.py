@@ -54,6 +54,13 @@ def init_db():
 
 init_db()
 
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp_webhook():
+    incoming_msg = request.values.get("Body", "").lower()
+    sender = request.values.get("From", "")
+    return jsonify({"status": "received", "message": incoming_msg, "from": sender})
+
+
 # **Twilio API: Berichten ophalen**
 @app.route("/get_messages", methods=["GET"])
 def get_messages():
