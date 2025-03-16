@@ -111,61 +111,43 @@ def generate_openai_diary(prompt: str):
         logging.error(f"OpenAI-fout: {e}")
         return "Er ging iets mis met OpenAI."
 
-# **OpenAI: Dagboek direct genereren (vanuit Martijn & Lisa)**
-@app.route("/generate_diary_now", methods=["POST"])
+#@app.route("/generate_diary_now", methods=["POST"])
 def generate_diary_now():
-    """
-    Genereert direct twee dagboekverslagen: 
-      - één vanuit Martijns ik-perspectief
-      - één vanuit Lisa's ik-perspectief
-    op basis van de laatste 24 uur aan WhatsApp-berichten uit Twilio.
-    Slaat ze op in de database en geeft beide terug als JSON.
-    """
     logging.debug("▶️ generate_diary_now aangeroepen.")
 
-    # Haal de laatste 50 berichten op
-    response = requests.get("https://flask-dagboek-bot-production.up.railway.app/get_messages")
-    if response.status_code != 200:
-        return jsonify({"error": f"Fout bij ophalen berichten: {response.status_code}"}), 500
-    
-    messages = response.json()
-    if not messages:
+    # Haal direct de Twilio berichten op, zonder /get_messages te gebruiken
+    all_messages = twilio_client.messages.list(limit=50)
+    if not all_messages:
         return jsonify({"error": "Geen berichten beschikbaar."}), 400
 
-    # Filter alleen die van de laatste 24 uur
-    now = datetime.datetime.utcnow()
-    one_day_ago = now - datetime.timedelta(days=1)
-    recent_texts = []
+    now_utc = datetime.datetime.utcnow()
+    one_day_ago = now_utc - datetime.timedelta(days=1)
+    
+    last_24h_bodies = []
+    for msg in all_messages:
+        # Filter alleen berichten voor/van de Sandbox
+        if msg.from_ == TWILIO_SANDBOX_NUMBER or msg.to == TWILIO_SANDBOX_NUMBER:
+            # Check date_sent
+            if not msg.date_sent:
+                continue
+            # msg.date_sent is een datetime-object
+            # Vergelijk direct met one_day_ago (geen strptime nodig!)
+            if msg.date_sent > one_day_ago:
+                last_24h_bodies.append(msg.body)
+    
+    if not last_24h_bodies:
+        return jsonify({"error": "Geen recente berichten (24 uur)."}), 400
 
-    for msg in messages:
-        date_str = msg.get("date_sent")
-        if not date_str:
-            continue  # als er geen datum is, skip
-        try:
-            date_obj = datetime.datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S GMT")
-        except ValueError:
-            # Als de parse faalt, skip 
-            # (of je kunt logging.debug() doen om te zien wat er misgaat)
-            continue
+    # Combineer alle berichten tot één string
+    combined_text = "\n".join(last_24h_bodies)
 
-        if date_obj > one_day_ago:
-            # Pak de body
-            recent_texts.append(msg["body"])
-
-    if not recent_texts:
-        return jsonify({"error": "Geen recente berichten (laatste 24 uur)."}), 400
-
-    # Bouw 1 string met alle bericht-teksten (eventueel kun je formateren)
-    combined_text = "\n".join(recent_texts)
-
-    # Prompt voor Martijn
+    # Prompts maken
     prompt_martijn = f"""
 Ik ben Martijn en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
 {combined_text}
 
 Schrijf een dagboekverslag over mijn dag vanuit mijn ik-perspectief.
 """
-    # Prompt voor Lisa
     prompt_lisa = f"""
 Ik ben Lisa en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
 {combined_text}
@@ -173,25 +155,19 @@ Ik ben Lisa en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
 Schrijf een dagboekverslag over mijn dag vanuit mijn ik-perspectief.
 """
 
-    # Vraag aan OpenAI (client-based)
+    # OpenAI calls
     martijn_entry = generate_openai_diary(prompt_martijn)
-    lisa_entry    = generate_openai_diary(prompt_lisa)
+    lisa_entry = generate_openai_diary(prompt_lisa)
 
-    # Sla allebei op in SQLite
+    # Opslaan in database
     conn = sqlite3.connect("diary.db")
     c = conn.cursor()
-    date_now_str = datetime.datetime.now().strftime("%Y-%m-%d")
-
-    c.execute("INSERT INTO entries (date, user, entry) VALUES (?, ?, ?)", 
-              (date_now_str, "Martijn", martijn_entry))
-    c.execute("INSERT INTO entries (date, user, entry) VALUES (?, ?, ?)", 
-              (date_now_str, "Lisa", lisa_entry))
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    c.execute("INSERT INTO entries (date, user, entry) VALUES (?, ?, ?)", (date_str, "Martijn", martijn_entry))
+    c.execute("INSERT INTO entries (date, user, entry) VALUES (?, ?, ?)", (date_str, "Lisa", lisa_entry))
     conn.commit()
     conn.close()
 
-    logging.debug("✅ Dagboekverslagen succesvol gegenereerd en opgeslagen.")
-
-    # Beide verslagen teruggeven in JSON
     return jsonify({
         "martijn_entry": martijn_entry,
         "lisa_entry": lisa_entry
