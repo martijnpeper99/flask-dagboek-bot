@@ -3,11 +3,10 @@ import sqlite3
 import datetime
 import logging
 import requests
-import datetime
 from flask import Flask, request, jsonify
 from twilio.rest import Client
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI  # <--- client-based import
 
 # Logging voor debugging
 logging.basicConfig(level=logging.DEBUG)
@@ -31,7 +30,7 @@ if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
 if not TWILIO_SANDBOX_NUMBER:
     logging.warning("TWILIO_SANDBOX_NUMBER is not set. The app may not function correctly.")
 
-# **Clients initialiseren**
+# **Clients initialiseren** (client-based OpenAI)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
@@ -56,30 +55,36 @@ init_db()
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_webhook():
+    """Webhook die Twilio aanroept als er een WhatsApp-bericht binnenkomt."""
     incoming_msg = request.values.get("Body", "").lower()
     sender = request.values.get("From", "")
+    # Je zou hier logica kunnen doen om direct te antwoorden, etc.
     return jsonify({"status": "received", "message": incoming_msg, "from": sender})
-
 
 # **Twilio API: Berichten ophalen**
 @app.route("/get_messages", methods=["GET"])
 def get_messages():
-    """ Haalt berichten op uit de Twilio Sandbox """
+    """ Haalt berichten op uit de Twilio Sandbox (laatste 50). """
     messages = twilio_client.messages.list(limit=50)
-    recent_messages = [
-        {
-            "from": msg.from_,
-            "body": msg.body,
-            "date_sent": msg.date_sent
-        }
-        for msg in messages if msg.from_ == TWILIO_SANDBOX_NUMBER or msg.to == TWILIO_SANDBOX_NUMBER
-    ]
+    recent_messages = []
+    for msg in messages:
+        # Filter alleen berichten die in/uit de Sandbox gaan
+        if (msg.from_ == TWILIO_SANDBOX_NUMBER) or (msg.to == TWILIO_SANDBOX_NUMBER):
+            if msg.date_sent:
+                date_str = msg.date_sent.strftime("%a, %d %b %Y %H:%M:%S GMT")
+            else:
+                date_str = None
+            recent_messages.append({
+                "from": msg.from_,
+                "body": msg.body,
+                "date_sent": date_str
+            })
     return jsonify(recent_messages)
 
 # **Twilio Webhook voor automatische WhatsApp-reacties**
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Automatisch antwoorden op WhatsApp-berichten"""
+    """Automatisch antwoorden op WhatsApp-berichten (optioneel)."""
     incoming_msg = request.values.get('Body', '').lower()
     sender = request.values.get('From', '')
 
@@ -90,95 +95,110 @@ def webhook():
 
     return jsonify({"message": response_msg})
 
-# **OpenAI: Dagboek genereren**
-
-@app.route("/generate_diary_now", methods=["POST"])
-def generate_diary_now():
-    """Genereert direct een dagboekverhaal en stuurt het terug."""
-    print("📖 Direct een dagboek genereren...")
-
-    # Haal de laatste 24 uur aan berichten op
-    response = requests.get("https://flask-dagboek-bot-production.up.railway.app/get_messages")
-
-    if response.status_code == 200:
-        messages = response.json()
-        if not messages:
-            return jsonify({"error": "Geen berichten in de laatste 24 uur."}), 400
-
-        # Filter berichten van de laatste 24 uur
-        now = datetime.datetime.utcnow()
-        recent_messages = [
-            msg["body"] for msg in messages if datetime.datetime.strptime(msg["date_sent"], "%a, %d %b %Y %H:%M:%S GMT") > now - datetime.timedelta(days=1)
-        ]
-
-        # Verstuur berichten naar OpenAI voor dagboekverslag
-        if recent_messages:
-            prompt = f"""
-            Ik ben Martijn en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
-            {recent_messages}
-
-            Schrijf een dagboekverslag over mijn dag vanuit mijn perspectief.
-            """
-
-            openai_response = openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}]
-            )
-
-            diary_entry = openai_response.choices[0].message.content
-
-            # Sla het dagboek op in SQLite
-            conn = sqlite3.connect("diary.db")
-            c = conn.cursor()
-            c.execute("INSERT INTO entries (date, user, entry) VALUES (?, ?, ?)", (datetime.datetime.now().strftime("%Y-%m-%d"), "Martijn", diary_entry))
-            conn.commit()
-            conn.close()
-
-            print("✅ Dagboek direct gegenereerd en opgeslagen!")
-            return jsonify({"entry": diary_entry})
-
-        else:
-            return jsonify({"error": "Geen recente berichten gevonden."}), 400
-
-    else:
-        return jsonify({"error": f"Fout bij ophalen berichten: {response.status_code}"}), 500
-
-@app.route("/generate_diary", methods=["POST"])
-def generate_diary():
-    """ Genereert een dagboekverhaal op basis van WhatsApp-berichten """
-    messages = request.json.get("messages")
-    if not messages:
-        return jsonify({"error": "Geen berichten ontvangen"}), 400
-
-    prompt = f"""
-    Ik ben Martijn en dit zijn mijn WhatsApp-berichten met Lisa van vandaag:
-    {messages}
-
-    Schrijf een dagboekverslag over mijn dag vanuit mijn perspectief.
+# **Hulpfunctie om OpenAI-chatcalls te doen (client-based)**
+def generate_openai_diary(prompt: str):
     """
-
+    Stuurt prompt naar OpenAI via client-gebaseerde aanroep
+    en geeft de response content terug.
+    """
     try:
         response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}]
         )
-
-        entry = response.choices[0].message.content
-        date = datetime.datetime.now().strftime("%Y-%m-%d")
-
-        # **Opslaan in database**
-        conn = sqlite3.connect("diary.db")
-        c = conn.cursor()
-        c.execute("INSERT INTO entries (date, user, entry) VALUES (?, ?, ?)", (date, "Martijn", entry))
-        conn.commit()
-        conn.close()
-
-        return jsonify({"entry": entry})
-
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        logging.error(f"Error generating diary: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        logging.error(f"OpenAI-fout: {e}")
+        return "Er ging iets mis met OpenAI."
+
+# **OpenAI: Dagboek direct genereren (vanuit Martijn & Lisa)**
+@app.route("/generate_diary_now", methods=["POST"])
+def generate_diary_now():
+    """
+    Genereert direct twee dagboekverslagen: 
+      - één vanuit Martijns ik-perspectief
+      - één vanuit Lisa's ik-perspectief
+    op basis van de laatste 24 uur aan WhatsApp-berichten uit Twilio.
+    Slaat ze op in de database en geeft beide terug als JSON.
+    """
+    logging.debug("▶️ generate_diary_now aangeroepen.")
+
+    # Haal de laatste 50 berichten op
+    response = requests.get("https://flask-dagboek-bot-production.up.railway.app/get_messages")
+    if response.status_code != 200:
+        return jsonify({"error": f"Fout bij ophalen berichten: {response.status_code}"}), 500
+    
+    messages = response.json()
+    if not messages:
+        return jsonify({"error": "Geen berichten beschikbaar."}), 400
+
+    # Filter alleen die van de laatste 24 uur
+    now = datetime.datetime.utcnow()
+    one_day_ago = now - datetime.timedelta(days=1)
+    recent_texts = []
+
+    for msg in messages:
+        date_str = msg.get("date_sent")
+        if not date_str:
+            continue  # als er geen datum is, skip
+        try:
+            date_obj = datetime.datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S GMT")
+        except ValueError:
+            # Als de parse faalt, skip 
+            # (of je kunt logging.debug() doen om te zien wat er misgaat)
+            continue
+
+        if date_obj > one_day_ago:
+            # Pak de body
+            recent_texts.append(msg["body"])
+
+    if not recent_texts:
+        return jsonify({"error": "Geen recente berichten (laatste 24 uur)."}), 400
+
+    # Bouw 1 string met alle bericht-teksten (eventueel kun je formateren)
+    combined_text = "\n".join(recent_texts)
+
+    # Prompt voor Martijn
+    prompt_martijn = f"""
+Ik ben Martijn en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
+{combined_text}
+
+Schrijf een dagboekverslag over mijn dag vanuit mijn ik-perspectief.
+"""
+    # Prompt voor Lisa
+    prompt_lisa = f"""
+Ik ben Lisa en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
+{combined_text}
+
+Schrijf een dagboekverslag over mijn dag vanuit mijn ik-perspectief.
+"""
+
+    # Vraag aan OpenAI (client-based)
+    martijn_entry = generate_openai_diary(prompt_martijn)
+    lisa_entry    = generate_openai_diary(prompt_lisa)
+
+    # Sla allebei op in SQLite
+    conn = sqlite3.connect("diary.db")
+    c = conn.cursor()
+    date_now_str = datetime.datetime.now().strftime("%Y-%m-%d")
+
+    c.execute("INSERT INTO entries (date, user, entry) VALUES (?, ?, ?)", 
+              (date_now_str, "Martijn", martijn_entry))
+    c.execute("INSERT INTO entries (date, user, entry) VALUES (?, ?, ?)", 
+              (date_now_str, "Lisa", lisa_entry))
+    conn.commit()
+    conn.close()
+
+    logging.debug("✅ Dagboekverslagen succesvol gegenereerd en opgeslagen.")
+
+    # Beide verslagen teruggeven in JSON
+    return jsonify({
+        "martijn_entry": martijn_entry,
+        "lisa_entry": lisa_entry
+    })
 
 # **Server starten**
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
+
