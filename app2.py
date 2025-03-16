@@ -6,15 +6,14 @@ import requests
 from flask import Flask, request, jsonify
 from twilio.rest import Client
 from dotenv import load_dotenv
-from openai import OpenAI  # <--- client-based import
+from openai import OpenAI  # client-based import
 
-# Logging voor debugging
+# Logging instellen
 logging.basicConfig(level=logging.DEBUG)
 
-# **Laad environment variables**
+# Environment-variabelen laden
 load_dotenv()
 
-# **API Keys laden**
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
@@ -22,22 +21,21 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 MY_PHONE_NUMBER = os.getenv("MY_PHONE_NUMBER")
 TWILIO_SANDBOX_NUMBER = os.getenv("TWILIO_SANDBOX_NUMBER")
 
-# **Controleer of de variabelen zijn geladen**
 if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY is not set. Check your .env file!")
+    raise ValueError("OPENAI_API_KEY is not set. Check your .env or Railway variables!")
 if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-    raise ValueError("TWILIO credentials are missing. Check your .env file!")
+    raise ValueError("TWILIO credentials missing. Check your .env or Railway variables!")
 if not TWILIO_SANDBOX_NUMBER:
-    logging.warning("TWILIO_SANDBOX_NUMBER is not set. The app may not function correctly.")
+    logging.warning("TWILIO_SANDBOX_NUMBER is not set, might cause issues.")
 
-# **Clients initialiseren** (client-based OpenAI)
+# Clients initialiseren
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# **Flask app starten**
+# Flask-app
 app = Flask(__name__)
 
-# **SQLite Database aanmaken**
+# Database inrichten
 def init_db():
     conn = sqlite3.connect("diary.db")
     c = conn.cursor()
@@ -47,33 +45,37 @@ def init_db():
         date TEXT,
         user TEXT,
         entry TEXT
-    )""")
+    )
+    """)
     conn.commit()
     conn.close()
 
 init_db()
+
+# =======================
+#  Routes
+# =======================
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     """Webhook die Twilio aanroept als er een WhatsApp-bericht binnenkomt."""
     incoming_msg = request.values.get("Body", "").lower()
     sender = request.values.get("From", "")
-    # Je zou hier logica kunnen doen om direct te antwoorden, etc.
     return jsonify({"status": "received", "message": incoming_msg, "from": sender})
 
-# **Twilio API: Berichten ophalen**
 @app.route("/get_messages", methods=["GET"])
 def get_messages():
-    """ Haalt berichten op uit de Twilio Sandbox (laatste 50). """
+    """ Haalt berichten op uit Twilio Sandbox (handig voor debug of als je 'm extern wil aanroepen). """
     messages = twilio_client.messages.list(limit=50)
     recent_messages = []
     for msg in messages:
-        # Filter alleen berichten die in/uit de Sandbox gaan
-        if (msg.from_ == TWILIO_SANDBOX_NUMBER) or (msg.to == TWILIO_SANDBOX_NUMBER):
+        # Filter alleen sandbox-berichten (afzender of ontvanger is de sandbox)
+        if msg.from_ == TWILIO_SANDBOX_NUMBER or msg.to == TWILIO_SANDBOX_NUMBER:
             if msg.date_sent:
                 date_str = msg.date_sent.strftime("%a, %d %b %Y %H:%M:%S GMT")
             else:
                 date_str = None
+
             recent_messages.append({
                 "from": msg.from_,
                 "body": msg.body,
@@ -81,26 +83,19 @@ def get_messages():
             })
     return jsonify(recent_messages)
 
-# **Twilio Webhook voor automatische WhatsApp-reacties**
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Automatisch antwoorden op WhatsApp-berichten (optioneel)."""
+    """Automatisch antwoorden op WhatsApp-berichten."""
     incoming_msg = request.values.get('Body', '').lower()
     sender = request.values.get('From', '')
-
     if "hallo" in incoming_msg:
         response_msg = "Hey! Hoe gaat het vandaag?"
     else:
         response_msg = "Sorry, ik begrijp dat niet."
-
     return jsonify({"message": response_msg})
 
-# **Hulpfunctie om OpenAI-chatcalls te doen (client-based)**
-def generate_openai_diary(prompt: str):
-    """
-    Stuurt prompt naar OpenAI via client-gebaseerde aanroep
-    en geeft de response content terug.
-    """
+def generate_openai_diary(prompt: str) -> str:
+    """Hulpfunctie om de prompt naar OpenAI te sturen via de client-based methode."""
     try:
         response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -110,46 +105,61 @@ def generate_openai_diary(prompt: str):
     except Exception as e:
         logging.error(f"OpenAI-fout: {e}")
         return "Er ging iets mis met OpenAI."
+
 @app.route("/generate_diary_now", methods=["POST"])
 def generate_diary_now():
+    """
+    Genereert twee dagboekverslagen (Martijn & Lisa) op basis van de laatste 24 uur 
+    aan WhatsApp Sandbox-berichten. Slaat ze op in de DB. Stuurt JSON terug.
+    """
     logging.debug("▶️ generate_diary_now aangeroepen.")
 
-    # 1) Haal direct Twilio-berichten op
+    # ======= Belangrijkste verandering! =======
+    # We halen direct Twilio-berichten op, ipv via requests.get("/get_messages"):
+
     all_messages = twilio_client.messages.list(limit=50)
     if not all_messages:
         return jsonify({"error": "Geen berichten beschikbaar."}), 400
 
-    # 2) Filter laatste 24 uur
     now_utc = datetime.datetime.utcnow()
     one_day_ago = now_utc - datetime.timedelta(days=1)
 
     last_24h_bodies = []
     for msg in all_messages:
+        # Filter alleen de sandbox-berichten
         if msg.from_ == TWILIO_SANDBOX_NUMBER or msg.to == TWILIO_SANDBOX_NUMBER:
-            if msg.date_sent and msg.date_sent > one_day_ago:
-                last_24h_bodies.append(msg.body)
+            # Check of er een date_sent is
+            if msg.date_sent:
+                # msg.date_sent is een datetime-obj (UTC)
+                if msg.date_sent > one_day_ago:
+                    last_24h_bodies.append(msg.body)
 
     if not last_24h_bodies:
         return jsonify({"error": "Geen recente berichten (24 uur)."}), 400
 
     combined_text = "\n".join(last_24h_bodies)
 
-    # 3) Bouw prompts en genereer met OpenAI
+    # Prompt voor Martijn
     prompt_martijn = f"""
-    Ik ben Martijn...
-    {combined_text}
-    Schrijf een dagboekverslag...
-    """
-    prompt_lisa = f"""
-    Ik ben Lisa...
-    {combined_text}
-    Schrijf een dagboekverslag...
-    """
+Ik ben Martijn en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
+{combined_text}
 
+Schrijf een dagboekverslag over mijn dag vanuit mijn ik-perspectief.
+"""
+
+    # Prompt voor Lisa
+    prompt_lisa = f"""
+Ik ben Lisa en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
+{combined_text}
+
+Schrijf een dagboekverslag over mijn dag vanuit mijn ik-perspectief.
+"""
+
+    # OpenAI calls
     martijn_entry = generate_openai_diary(prompt_martijn)
     lisa_entry = generate_openai_diary(prompt_lisa)
 
-    # 4) Sla op in database
+    # Opslaan in database
     conn = sqlite3.connect("diary.db")
     c = conn.cursor()
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -158,15 +168,13 @@ def generate_diary_now():
     conn.commit()
     conn.close()
 
-    # 5) Geef JSON terug
     return jsonify({
         "martijn_entry": martijn_entry,
         "lisa_entry": lisa_entry
     })
 
-
-# **Server starten**
+# Startserver
 if __name__ == "__main__":
+    import os
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
-
