@@ -2,6 +2,8 @@ import os
 import sqlite3
 import datetime
 import logging
+import requests
+import datetime
 from flask import Flask, request, jsonify
 from twilio.rest import Client
 from dotenv import load_dotenv
@@ -82,6 +84,58 @@ def webhook():
     return jsonify({"message": response_msg})
 
 # **OpenAI: Dagboek genereren**
+
+@app.route("/generate_diary_now", methods=["POST"])
+def generate_diary_now():
+    """Genereert direct een dagboekverhaal en stuurt het terug."""
+    print("📖 Direct een dagboek genereren...")
+
+    # Haal de laatste 24 uur aan berichten op
+    response = requests.get("https://flask-dagboek-bot-production.up.railway.app/get_messages")
+
+    if response.status_code == 200:
+        messages = response.json()
+        if not messages:
+            return jsonify({"error": "Geen berichten in de laatste 24 uur."}), 400
+
+        # Filter berichten van de laatste 24 uur
+        now = datetime.datetime.utcnow()
+        recent_messages = [
+            msg["body"] for msg in messages if datetime.datetime.strptime(msg["date_sent"], "%a, %d %b %Y %H:%M:%S GMT") > now - datetime.timedelta(days=1)
+        ]
+
+        # Verstuur berichten naar OpenAI voor dagboekverslag
+        if recent_messages:
+            prompt = f"""
+            Ik ben Martijn en dit zijn mijn WhatsApp-berichten van de laatste 24 uur:
+            {recent_messages}
+
+            Schrijf een dagboekverslag over mijn dag vanuit mijn perspectief.
+            """
+
+            openai_response = openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            diary_entry = openai_response.choices[0].message.content
+
+            # Sla het dagboek op in SQLite
+            conn = sqlite3.connect("diary.db")
+            c = conn.cursor()
+            c.execute("INSERT INTO entries (date, user, entry) VALUES (?, ?, ?)", (datetime.datetime.now().strftime("%Y-%m-%d"), "Martijn", diary_entry))
+            conn.commit()
+            conn.close()
+
+            print("✅ Dagboek direct gegenereerd en opgeslagen!")
+            return jsonify({"entry": diary_entry})
+
+        else:
+            return jsonify({"error": "Geen recente berichten gevonden."}), 400
+
+    else:
+        return jsonify({"error": f"Fout bij ophalen berichten: {response.status_code}"}), 500
+
 @app.route("/generate_diary", methods=["POST"])
 def generate_diary():
     """ Genereert een dagboekverhaal op basis van WhatsApp-berichten """
